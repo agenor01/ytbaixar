@@ -1,0 +1,8 @@
+node_modules/
+web/dist/
+bin/
+data/
+.claude/
+*.log
+.DS_Store
+Thumbs.db

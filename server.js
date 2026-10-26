@@ -1,0 +1,491 @@
+// ytbaixar — servidor local que baixa vídeos do YouTube e YouTube Music em MP4 usando yt-dlp + ffmpeg.
+// Sem dependências: só Node. A interface (web/) é compilada pra web/dist e servida daqui.
+//
+//   node server.js          → http://localhost:8787 (só este PC)
+//   node server.js --app    → abre numa janela de app (Edge/Chrome) e desliga sozinho quando a janela fecha
+//
+// Acesso pelo celular: ligado nos Ajustes do app. Abre uma segunda porta (8788) na rede Wi-Fi
+// que só aceita quem tem a chave secreta (vem no link/QR code).
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+const { spawn } = require('child_process');
+
+const PORT = Number(process.env.PORT) || 8787;
+const LAN_PORT = PORT + 1;
+const APP_MODE = process.argv.includes('--app');
+const ROOT = __dirname;
+const DIST = path.join(ROOT, 'web', 'dist');
+const BIN_DIR = path.join(ROOT, 'bin');
+const DATA_DIR = path.join(ROOT, 'data');
+const CONFIG = path.join(DATA_DIR, 'config.json');
+const YTDLP_LOCAL = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const TMP = path.join(os.tmpdir(), 'ytbaixar');
+const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/'
+  + (process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+
+const ALLOWED_HOSTS = new Set([
+  'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'www.youtube-nocookie.com',
+]);
+// Capas passam pelo servidor pra página conseguir ler as cores (canvas sem CORS)
+const THUMB_HOSTS = /^(i\d*\.ytimg\.com|lh\d\.googleusercontent\.com|yt\d\.ggpht\.com)$/;
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json', '.woff2': 'font/woff2', '.woff': 'font/woff',
+};
+
+const jobs = new Map(); // id -> { status, percent, speed, eta, size, file, name, error, listeners, created, proc }
+
+fs.mkdirSync(TMP, { recursive: true });
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+/* ---------- Configuração (acesso pela rede + chave) ---------- */
+function loadConfig() {
+  let c = {};
+  try { c = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch {}
+  if (!c.token) c.token = crypto.randomBytes(12).toString('base64url');
+  return { lan: !!c.lan, token: c.token };
+}
+const config = loadConfig();
+const saveConfig = () => fs.writeFileSync(CONFIG, JSON.stringify(config, null, 2));
+saveConfig();
+
+function ytdlpPath() {
+  return fs.existsSync(YTDLP_LOCAL) ? YTDLP_LOCAL : 'yt-dlp';
+}
+
+async function ensureYtdlp() {
+  if (fs.existsSync(YTDLP_LOCAL)) return;
+  console.log('Baixando yt-dlp de', YTDLP_URL, '...');
+  fs.mkdirSync(BIN_DIR, { recursive: true });
+  const res = await fetch(YTDLP_URL);
+  if (!res.ok) throw new Error('Falha ao baixar yt-dlp: HTTP ' + res.status);
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(YTDLP_LOCAL, buf, { mode: 0o755 });
+  console.log('yt-dlp salvo em', YTDLP_LOCAL);
+}
+
+function checkUrl(raw) {
+  let u;
+  try { u = new URL(String(raw || '').trim()); } catch { return null; }
+  if (!/^https?:$/.test(u.protocol) || !ALLOWED_HOSTS.has(u.hostname.toLowerCase())) return null;
+  return u;
+}
+
+function sourceOf(u) {
+  return u.hostname.toLowerCase() === 'music.youtube.com' ? 'music' : 'youtube';
+}
+
+function run(args, onLine, onSpawn) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(ytdlpPath(), args, { windowsHide: true });
+    if (onSpawn) onSpawn(p);
+    let out = '', err = '';
+    p.stdout.setEncoding('utf8');
+    p.stderr.setEncoding('utf8');
+    // Com --print o yt-dlp fica em modo quieto e manda o progresso pro stderr, então lê os dois
+    const splitter = () => {
+      let pending = '';
+      return d => {
+        if (!onLine) return;
+        pending += d;
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop();
+        lines.forEach(onLine);
+      };
+    };
+    const outLines = splitter(), errLines = splitter();
+    p.stdout.on('data', d => { out += d; outLines(d); });
+    p.stderr.on('data', d => { err += d; errLines(d); });
+    p.on('error', reject);
+    p.on('close', code => code === 0 ? resolve(out) : reject(new Error(lastError(err) || 'yt-dlp saiu com código ' + code)));
+  });
+}
+
+function lastError(stderr) {
+  const lines = stderr.split(/\r?\n/).filter(l => /ERROR/.test(l));
+  return (lines.pop() || stderr.trim().split(/\r?\n/).pop() || '').replace(/^ERROR:\s*/, '');
+}
+
+function json(res, code, data) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(data));
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let b = '';
+    req.on('data', c => { b += c; if (b.length > 1e5) req.destroy(); });
+    req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+
+// Tamanho aproximado do MP4 final pra cada resolução (melhor vídeo naquela altura + melhor áudio m4a)
+function sizesByHeight(formats) {
+  const size = f => f.filesize || f.filesize_approx || 0;
+  const audio = formats.filter(f => f.vcodec === 'none' && f.acodec && f.acodec !== 'none');
+  const bestAudio = audio.filter(f => f.ext === 'm4a').sort((a, b) => size(b) - size(a))[0] || audio[0];
+  const audioSize = bestAudio ? size(bestAudio) : 0;
+  const out = {};
+  for (const f of formats) {
+    if (!f.height || !f.vcodec || f.vcodec === 'none' || !size(f)) continue;
+    const avc = /^avc1/.test(f.vcodec);
+    const cur = out[f.height];
+    // Mesma preferência do download: H.264 primeiro
+    if (!cur || (avc && !cur.avc) || (avc === cur.avc && size(f) > cur.v)) out[f.height] = { v: size(f), avc };
+  }
+  const result = { audio: audioSize || null };
+  for (const h in out) result[h] = out[h].v + audioSize;
+  return result;
+}
+
+async function handleInfo(req, res) {
+  const { url } = await readBody(req);
+  const u = checkUrl(url);
+  if (!u) return json(res, 400, { error: 'Cole um link do YouTube ou do YouTube Music.' });
+  try {
+    const out = await run(['-J', '--no-playlist', '--no-warnings', u.href]);
+    const info = JSON.parse(out);
+    const formats = info.formats || [];
+    const heights = [...new Set(formats
+      .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
+      .map(f => f.height))].sort((a, b) => b - a);
+    json(res, 200, {
+      id: info.id,
+      url: u.href,
+      webpage: info.webpage_url || u.href,
+      source: sourceOf(u),
+      title: info.track || info.title,
+      artist: info.artist || info.uploader || info.channel || '',
+      channelUrl: info.channel_url || info.uploader_url || '',
+      thumbnail: info.thumbnail,
+      duration: info.duration || 0,
+      views: info.view_count ?? null,
+      likes: info.like_count ?? null,
+      uploaded: info.upload_date || null,
+      album: info.album || null,
+      heights,
+      sizes: sizesByHeight(formats),
+    });
+  } catch (e) {
+    json(res, 500, { error: e.message });
+  }
+}
+
+function formatArgs(quality) {
+  if (quality === 'audio') {
+    return ['-f', 'ba[ext=m4a]/ba', '-x', '--audio-format', 'm4a'];
+  }
+  const h = parseInt(quality, 10);
+  // Prefere H.264 + AAC (toca em qualquer lugar); cai pra VP9/AV1 só se for a única opção na resolução.
+  const sort = h > 0 ? `res:${h},vcodec:avc1,acodec:m4a` : 'res,vcodec:avc1,acodec:m4a';
+  return ['-S', sort, '-f', 'bv*+ba/b', '--merge-output-format', 'mp4', '--remux-video', 'mp4'];
+}
+
+function emit(job) {
+  const data = `data: ${JSON.stringify(publicJob(job))}\n\n`;
+  for (const r of job.listeners) r.write(data);
+}
+
+function publicJob(j) {
+  return { status: j.status, percent: j.percent, speed: j.speed, eta: j.eta, size: j.size, part: j.part, name: j.name, error: j.error };
+}
+
+const na = s => { s = (s || '').trim(); return !s || s === 'NA' || /^Unknown/.test(s) ? '' : s; };
+
+async function handleStart(req, res) {
+  const { url, quality } = await readBody(req);
+  const u = checkUrl(url);
+  if (!u) return json(res, 400, { error: 'Link inválido.' });
+  const id = crypto.randomBytes(8).toString('hex');
+  const dir = path.join(TMP, id);
+  fs.mkdirSync(dir, { recursive: true });
+  const job = { status: 'baixando', percent: 0, speed: '', eta: '', size: '', part: 0, listeners: new Set(), created: Date.now(), dir };
+  jobs.set(id, job);
+  json(res, 200, { id });
+
+  const args = [
+    '--no-playlist', '--no-warnings', '--newline', '--progress', '--no-part', '--restrict-filenames',
+    '--progress-template',
+    'download:PROG|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s',
+    '--print', 'after_move:FILE|%(filepath)s',
+    '-o', path.join(dir, '%(title).150B.%(ext)s'),
+    ...formatArgs(quality),
+    u.href,
+  ];
+  // Vídeo e áudio vêm em downloads separados (part 1 e 2); quando um chega a 100% mostra "finalizando"
+  // até o próximo começar (ou até o ffmpeg terminar de juntar).
+  let lastPct = 0;
+  const onLine = line => {
+    if (line.startsWith('PROG|')) {
+      const [, pct, speed, eta, total, estimate] = line.split('|');
+      const p = parseFloat(pct) || 0;
+      if (p + 30 < lastPct || job.part === 0) job.part++;
+      lastPct = p;
+      job.status = p >= 100 ? 'convertendo' : 'baixando';
+      job.percent = p;
+      job.speed = na(speed);
+      job.eta = na(eta);
+      job.size = na(total) || na(estimate);
+      emit(job);
+    } else if (line.startsWith('FILE|')) {
+      job.file = line.slice(5).trim();
+    }
+  };
+  try {
+    await run(args, onLine, p => { job.proc = p; });
+    if (job.status === 'cancelado') return;
+    if (!job.file || !fs.existsSync(job.file)) {
+      const f = fs.readdirSync(dir).map(n => path.join(dir, n)).sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
+      job.file = f;
+    }
+    if (!job.file) throw new Error('Arquivo final não encontrado.');
+    job.name = path.basename(job.file);
+    job.bytes = fs.statSync(job.file).size;
+    job.status = 'pronto';
+    job.percent = 100;
+  } catch (e) {
+    if (job.status === 'cancelado') return;
+    job.status = 'erro';
+    job.error = e.message;
+  }
+  job.proc = null;
+  emit(job);
+  for (const r of job.listeners) r.end();
+}
+
+function handleCancel(id, res) {
+  const job = jobs.get(id);
+  if (!job) return json(res, 404, { error: 'Tarefa não encontrada.' });
+  if (job.proc) {
+    job.status = 'cancelado';
+    // No Windows o yt-dlp abre o ffmpeg como filho; taskkill /T derruba a árvore toda
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(job.proc.pid), '/T', '/F'], { windowsHide: true });
+    else job.proc.kill('SIGKILL');
+    emit(job);
+    for (const r of job.listeners) r.end();
+  }
+  // Espera o processo soltar os arquivos antes de apagar
+  setTimeout(() => cleanup(id), 1500);
+  json(res, 200, { ok: true });
+}
+
+function handleProgress(id, res) {
+  const job = jobs.get(id);
+  if (!job) return json(res, 404, { error: 'Tarefa não encontrada.' });
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write(`data: ${JSON.stringify(publicJob(job))}\n\n`);
+  if (['pronto', 'erro', 'cancelado'].includes(job.status)) return res.end();
+  job.listeners.add(res);
+  res.on('close', () => job.listeners.delete(res));
+}
+
+function handleFile(id, res) {
+  const job = jobs.get(id);
+  if (!job || job.status !== 'pronto') return json(res, 404, { error: 'Arquivo não disponível.' });
+  const stat = fs.statSync(job.file);
+  const ascii = job.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+  res.writeHead(200, {
+    'Content-Type': job.name.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4',
+    'Content-Length': stat.size,
+    'Content-Disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(job.name)}`,
+  });
+  const s = fs.createReadStream(job.file);
+  s.pipe(res);
+  s.on('close', () => cleanup(id));
+}
+
+async function handleThumb(raw, res) {
+  let u;
+  try { u = new URL(raw); } catch { return json(res, 400, { error: 'URL inválida' }); }
+  if (u.protocol !== 'https:' || !THUMB_HOSTS.test(u.hostname)) return json(res, 400, { error: 'Host não permitido' });
+  const r = await fetch(u);
+  if (!r.ok) return json(res, 502, { error: 'Capa indisponível' });
+  res.writeHead(200, { 'Content-Type': r.headers.get('content-type') || 'image/jpeg', 'Cache-Control': 'max-age=86400' });
+  res.end(Buffer.from(await r.arrayBuffer()));
+}
+
+function cleanup(id) {
+  const job = jobs.get(id);
+  if (!job) return;
+  jobs.delete(id);
+  fs.rm(job.dir, { recursive: true, force: true }, () => {});
+}
+
+// Apaga tarefas esquecidas depois de 1 hora
+setInterval(() => {
+  for (const [id, j] of jobs) if (Date.now() - j.created > 3600e3) cleanup(id);
+}, 600e3).unref();
+
+/* ---------- Rede local (celular) ---------- */
+let lanServer = null;
+
+function lanAddresses() {
+  const ips = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) ips.push(a.address);
+  }
+  // Redes de casa (192.168.x / 10.x) primeiro; adaptadores virtuais costumam ser 172.x
+  const rank = ip => (ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : 2);
+  return ips.sort((a, b) => rank(a) - rank(b));
+}
+
+function netInfo(req) {
+  return {
+    local: isLocal(req),
+    lan: {
+      enabled: !!lanServer,
+      urls: lanServer ? lanAddresses().map(ip => `http://${ip}:${LAN_PORT}/?k=${config.token}`) : [],
+    },
+  };
+}
+
+function startLan() {
+  return new Promise((resolve, reject) => {
+    if (lanServer) return resolve();
+    const s = http.createServer(handler);
+    s.once('error', reject);
+    s.listen(LAN_PORT, '0.0.0.0', () => { lanServer = s; console.log(`Acesso pela rede: porta ${LAN_PORT}`); resolve(); });
+  });
+}
+
+function stopLan() {
+  if (!lanServer) return;
+  lanServer.close();
+  lanServer.closeAllConnections?.();
+  lanServer = null;
+}
+
+async function handleLan(req, res) {
+  if (!isLocal(req)) return json(res, 403, { error: 'Só dá pra mudar isso no próprio PC.' });
+  const { enabled } = await readBody(req);
+  try {
+    if (enabled) await startLan(); else stopLan();
+    config.lan = !!enabled;
+    saveConfig();
+    json(res, 200, netInfo(req));
+  } catch (e) {
+    json(res, 500, { error: 'Não consegui abrir a porta ' + LAN_PORT + ': ' + e.message });
+  }
+}
+
+const isLocal = req => {
+  const a = req.socket.remoteAddress || '';
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
+
+function cookieToken(req) {
+  const m = /(?:^|;\s*)ytb=([^;]+)/.exec(req.headers.cookie || '');
+  return m ? m[1] : '';
+}
+
+// Quem vem pela rede precisa da chave: chega pelo link (?k=...) e fica guardada num cookie
+function checkAccess(req, res, url) {
+  if (isLocal(req)) return true;
+  const k = url.searchParams.get('k');
+  const ok = (t) => t && t.length === config.token.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(config.token));
+  if (ok(k)) {
+    url.searchParams.delete('k');
+    res.writeHead(302, {
+      'Set-Cookie': `ytb=${config.token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
+      Location: url.pathname + (url.search || ''),
+    });
+    res.end();
+    return false;
+  }
+  if (ok(cookieToken(req))) return true;
+  res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end('<meta name=viewport content="width=device-width"><body style="font:16px system-ui;background:#0d0e11;color:#eee;padding:24px">' +
+    '<h2>ytbaixar</h2><p>Abra pelo QR code que aparece em <b>Ajustes → Usar no celular</b>, no PC.</p>');
+  return false;
+}
+
+/* ---------- App de PC: janela própria + desliga sozinho ---------- */
+let lastPing = Date.now();
+
+function openAppWindow(url) {
+  const pf = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA].filter(Boolean);
+  const candidates = [
+    ...pf.map(p => path.join(p, 'Microsoft', 'Edge', 'Application', 'msedge.exe')),
+    ...pf.map(p => path.join(p, 'Google', 'Chrome', 'Application', 'chrome.exe')),
+  ];
+  const exe = candidates.find(f => fs.existsSync(f));
+  if (exe) spawn(exe, [`--app=${url}`, '--window-size=1280,820'], { detached: true, stdio: 'ignore' }).unref();
+  else spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+}
+
+if (APP_MODE) {
+  // Sem nenhuma janela avisando há 75 s e nada baixando → encerra (economiza memória)
+  setInterval(() => {
+    const busy = [...jobs.values()].some(j => j.proc);
+    if (!busy && Date.now() - lastPing > 75e3) { console.log('Janela fechada, encerrando.'); process.exit(0); }
+  }, 15e3).unref();
+}
+
+/* ---------- Arquivos da interface ---------- */
+function serveStatic(pathname, res) {
+  if (!fs.existsSync(path.join(DIST, 'index.html'))) {
+    res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('A interface ainda não foi compilada. Rode: pnpm build');
+  }
+  const rel = decodeURIComponent(pathname).replace(/^\/+/, '') || 'index.html';
+  let file = path.join(DIST, rel);
+  if (!file.startsWith(DIST + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    // Rotas da interface caem no index.html; arquivos que não existem dão 404
+    if (path.extname(rel)) return json(res, 404, { error: 'Não encontrado' });
+    file = path.join(DIST, 'index.html');
+  }
+  const ext = path.extname(file);
+  const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+  // Arquivos com hash no nome podem ficar em cache pra sempre; o resto sempre revalida
+  headers['Cache-Control'] = rel.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'no-cache';
+  if (rel === 'sw.js') headers['Service-Worker-Allowed'] = '/';
+  res.writeHead(200, headers);
+  fs.createReadStream(file).pipe(res);
+}
+
+async function handler(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const { pathname } = url;
+  try {
+    if (!checkAccess(req, res, url)) return;
+    if (req.method === 'POST' && pathname === '/api/info') return await handleInfo(req, res);
+    if (req.method === 'POST' && pathname === '/api/start') return await handleStart(req, res);
+    if (req.method === 'POST' && pathname === '/api/ping') { lastPing = Date.now(); return json(res, 200, { ok: true }); }
+    if (req.method === 'POST' && pathname === '/api/lan') return await handleLan(req, res);
+    if (pathname === '/api/net') return json(res, 200, netInfo(req));
+    if (pathname === '/api/thumb') return await handleThumb(url.searchParams.get('u'), res);
+    let m;
+    if ((m = pathname.match(/^\/api\/progress\/([a-f0-9]{16})$/))) return handleProgress(m[1], res);
+    if ((m = pathname.match(/^\/api\/file\/([a-f0-9]{16})$/))) return handleFile(m[1], res);
+    if (req.method === 'POST' && (m = pathname.match(/^\/api\/cancel\/([a-f0-9]{16})$/))) return handleCancel(m[1], res);
+    if (req.method === 'GET' && !pathname.startsWith('/api/')) return serveStatic(pathname, res);
+    json(res, 404, { error: 'Não encontrado' });
+  } catch (e) {
+    if (!res.headersSent) json(res, 500, { error: e.message });
+  }
+}
+
+const server = http.createServer(handler);
+const localUrl = `http://localhost:${PORT}`;
+
+server.on('error', e => {
+  // Já tem um ytbaixar rodando: no modo app só abre outra janela dele
+  if (e.code === 'EADDRINUSE' && APP_MODE) { openAppWindow(localUrl); setTimeout(() => process.exit(0), 500); return; }
+  console.error(e.message);
+  process.exit(1);
+});
+
+ensureYtdlp()
+  .catch(e => console.warn('Aviso:', e.message, '- vou tentar o yt-dlp do PATH.'))
+  .then(() => server.listen(PORT, '127.0.0.1', async () => {
+    console.log(`ytbaixar rodando em ${localUrl}`);
+    if (config.lan) await startLan().catch(e => console.warn('Acesso pela rede indisponível:', e.message));
+    if (APP_MODE) openAppWindow(localUrl);
+  }));

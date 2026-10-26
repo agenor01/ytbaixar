@@ -7,6 +7,7 @@ import { Feed } from "@/components/Feed"
 import { DownloadButton, Hero } from "@/components/Hero"
 import { SearchBar } from "@/components/SearchBar"
 import { SettingsPanel } from "@/components/Settings"
+import { SetupBanner } from "@/components/SetupBanner"
 import { Sidebar } from "@/components/Sidebar"
 import { Tiles } from "@/components/Tiles"
 import { Button } from "@/components/ui/button"
@@ -136,6 +137,7 @@ export default function App() {
         </aside>
 
         <main className="thin-scroll min-w-0 px-4 pt-4 pb-32 md:overflow-y-auto md:px-7 md:pt-5 md:pb-7">
+          <SetupBanner />
           <SearchBar ref={urlRef} />
           <Hero />
           <Tiles />

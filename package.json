@@ -10,7 +10,7 @@
     "icons": "pnpm --dir web icons",
     "start": "node server.js",
     "app": "node server.js --app",
-    "atalho": "powershell -NoProfile -ExecutionPolicy Bypass -File app/instalar-atalho.ps1"
+    "installer": "node scripts/installer.mjs"
   },
   "engines": {
     "node": ">=20"

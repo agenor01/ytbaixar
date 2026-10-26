@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const PORT = Number(process.env.PORT) || 8787;
 const LAN_PORT = PORT + 1;
@@ -26,6 +26,12 @@ const YTDLP_LOCAL = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.ex
 const TMP = path.join(os.tmpdir(), 'ytbaixar');
 const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/'
   + (process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const FFMPEG_LOCAL = path.join(BIN_DIR, 'ffmpeg.exe');
+// Sem ffmpeg no PC (instalação nova): baixa um ffmpeg pronto na primeira vez. O "essentials" é o menor.
+const FFMPEG_URLS = [
+  'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+  'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+];
 
 const ALLOWED_HOSTS = new Set([
   'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'www.youtube-nocookie.com',
@@ -68,6 +74,60 @@ async function ensureYtdlp() {
   const buf = Buffer.from(await res.arrayBuffer());
   fs.writeFileSync(YTDLP_LOCAL, buf, { mode: 0o755 });
   console.log('yt-dlp salvo em', YTDLP_LOCAL);
+}
+
+/* ---------- ffmpeg (junta vídeo + áudio) ---------- */
+const ffmpeg = { state: 'checando', pct: 0, error: null };
+let ffmpegReady = null;
+
+function ffmpegInPath() {
+  try { return spawnSync('ffmpeg', ['-version'], { windowsHide: true, timeout: 10000 }).status === 0; } catch { return false; }
+}
+
+async function downloadTo(url, file, onPct) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const total = +res.headers.get('content-length') || 0;
+  const out = fs.createWriteStream(file);
+  let got = 0;
+  for await (const chunk of res.body) {
+    got += chunk.length;
+    if (total) onPct(Math.floor((got / total) * 100));
+    if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
+  }
+  await new Promise((r, j) => out.end(e => (e ? j(e) : r())));
+}
+
+function ensureFfmpeg() {
+  if (ffmpegReady) return ffmpegReady;
+  ffmpegReady = (async () => {
+    if (fs.existsSync(FFMPEG_LOCAL) || ffmpegInPath()) { ffmpeg.state = 'ok'; return; }
+    if (process.platform !== 'win32') { ffmpeg.state = 'erro'; ffmpeg.error = 'Instale o ffmpeg'; return; }
+    ffmpeg.state = 'baixando';
+    fs.mkdirSync(BIN_DIR, { recursive: true });
+    const zip = path.join(TMP, 'ffmpeg.zip');
+    // tar.exe do próprio Windows abre .zip (o do Git Bash não, por isso o caminho completo)
+    const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    for (const url of FFMPEG_URLS) {
+      try {
+        console.log('Baixando ffmpeg de', url);
+        await downloadTo(url, zip, p => { ffmpeg.pct = p; });
+        const r = spawnSync(tar, ['-xf', zip, '-C', BIN_DIR, '--strip-components', '2', '*/bin/ffmpeg.exe', '*/bin/ffprobe.exe'], { windowsHide: true });
+        if (!fs.existsSync(FFMPEG_LOCAL)) throw new Error('não achei o ffmpeg.exe no zip ' + (r.stderr || ''));
+        ffmpeg.state = 'ok'; ffmpeg.pct = 100; ffmpeg.error = null;
+        console.log('ffmpeg pronto em', FFMPEG_LOCAL);
+        return;
+      } catch (e) {
+        console.warn('Falhou:', e.message);
+        ffmpeg.error = e.message;
+      } finally {
+        fs.rm(zip, { force: true }, () => {});
+      }
+    }
+    ffmpeg.state = 'erro';
+    ffmpegReady = null; // deixa tentar de novo no próximo download
+  })();
+  return ffmpegReady;
 }
 
 function checkUrl(raw) {
@@ -206,11 +266,25 @@ async function handleStart(req, res) {
   const id = crypto.randomBytes(8).toString('hex');
   const dir = path.join(TMP, id);
   fs.mkdirSync(dir, { recursive: true });
-  const job = { status: 'baixando', percent: 0, speed: '', eta: '', size: '', part: 0, listeners: new Set(), created: Date.now(), dir };
+  const job = { status: 'iniciando', percent: 0, speed: '', eta: '', size: '', part: 0, listeners: new Set(), created: Date.now(), dir };
   jobs.set(id, job);
   json(res, 200, { id });
 
+  // Primeira vez numa instalação nova: espera o ffmpeg terminar de baixar
+  await ensureFfmpeg();
+  if (job.status === 'cancelado') return;
+  if (ffmpeg.state !== 'ok') {
+    job.status = 'erro';
+    job.error = 'Não consegui baixar o ffmpeg (' + (ffmpeg.error || 'sem internet?') + '). Tente de novo.';
+    emit(job);
+    for (const r of job.listeners) r.end();
+    return;
+  }
+  job.status = 'baixando';
+  emit(job);
+
   const args = [
+    ...(fs.existsSync(FFMPEG_LOCAL) ? ['--ffmpeg-location', BIN_DIR] : []),
     '--no-playlist', '--no-warnings', '--newline', '--progress', '--no-part', '--restrict-filenames',
     '--progress-template',
     'download:PROG|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s',
@@ -263,11 +337,11 @@ async function handleStart(req, res) {
 function handleCancel(id, res) {
   const job = jobs.get(id);
   if (!job) return json(res, 404, { error: 'Tarefa não encontrada.' });
-  if (job.proc) {
+  if (!['pronto', 'erro', 'cancelado'].includes(job.status)) {
     job.status = 'cancelado';
     // No Windows o yt-dlp abre o ffmpeg como filho; taskkill /T derruba a árvore toda
-    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(job.proc.pid), '/T', '/F'], { windowsHide: true });
-    else job.proc.kill('SIGKILL');
+    if (job.proc && process.platform === 'win32') spawn('taskkill', ['/pid', String(job.proc.pid), '/T', '/F'], { windowsHide: true });
+    else if (job.proc) job.proc.kill('SIGKILL');
     emit(job);
     for (const r of job.listeners) r.end();
   }
@@ -460,6 +534,7 @@ async function handler(req, res) {
     if (req.method === 'POST' && pathname === '/api/ping') { lastPing = Date.now(); return json(res, 200, { ok: true }); }
     if (req.method === 'POST' && pathname === '/api/lan') return await handleLan(req, res);
     if (pathname === '/api/net') return json(res, 200, netInfo(req));
+    if (pathname === '/api/status') return json(res, 200, { ffmpeg });
     if (pathname === '/api/thumb') return await handleThumb(url.searchParams.get('u'), res);
     let m;
     if ((m = pathname.match(/^\/api\/progress\/([a-f0-9]{16})$/))) return handleProgress(m[1], res);
@@ -486,6 +561,7 @@ ensureYtdlp()
   .catch(e => console.warn('Aviso:', e.message, '- vou tentar o yt-dlp do PATH.'))
   .then(() => server.listen(PORT, '127.0.0.1', async () => {
     console.log(`ytbaixar rodando em ${localUrl}`);
+    ensureFfmpeg(); // em segundo plano: já vai baixando enquanto a pessoa cola o link
     if (config.lan) await startLan().catch(e => console.warn('Acesso pela rede indisponível:', e.message));
     if (APP_MODE) openAppWindow(localUrl);
   }));

@@ -1,6 +1,7 @@
 // Estado do app fora do React (downloads continuam mesmo trocando de tela) + hook pra ler.
 import { useSyncExternalStore } from "react"
 import { toast } from "sonner"
+import { RELEASE_URL, isHosted } from "./backend"
 import { ago, fmtDur, isYtLink, overall, qualityList, thumbUrl } from "./format"
 import { ACTIVE, FINISHED, type FeedItem, type Filter, type HistoryItem, type Job, type Settings, type Tab, type VideoInfo } from "./types"
 
@@ -78,12 +79,22 @@ export async function copy(text: string, label = "Copiado") {
   catch { toast.error("Não deu pra copiar") }
 }
 
+/* ---------- Site publicado sem servidor ---------- */
+function needsApp() {
+  toast("Os downloads rodam no app de PC", {
+    description: "Esta é a versão online. Instale o ytbaixar pra Windows (grátis) e cole o link lá.",
+    action: { label: "Baixar o app", onClick: () => window.open(RELEASE_URL, "_blank", "noopener") },
+    duration: 8000,
+  })
+}
+
 /* ---------- Busca ---------- */
 let ticket = 0
 export async function fetchInfo(url: string, opts: { auto?: boolean } = {}) {
   url = String(url || "").trim()
   if (!url) return
   if (!isYtLink(url)) { toast.error("Isso não parece um link do YouTube"); return }
+  if (await isHosted()) { needsApp(); return }
   const my = ++ticket
   set({ loading: true })
   try {

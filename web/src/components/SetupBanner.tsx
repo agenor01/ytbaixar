@@ -1,26 +1,48 @@
 import { useEffect, useState } from "react"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { AlertCircle, Download, Loader2, Monitor } from "lucide-react"
+import { RELEASE_URL, fetchStatus, isHosted, type ServerStatus } from "@/lib/backend"
 
-interface Status { ffmpeg: { state: "checando" | "baixando" | "ok" | "erro"; pct: number; error: string | null } }
-
-// Numa instalação nova o servidor baixa o ffmpeg sozinho; mostra o andamento até ficar pronto
+// Avisos do topo:
+// - site publicado sem servidor (Cloudflare): explica e leva pro instalador
+// - instalação nova: mostra o ffmpeg sendo baixado até ficar pronto
 export function SetupBanner() {
-  const [s, setS] = useState<Status["ffmpeg"] | null>(null)
+  const [hosted, setHosted] = useState(false)
+  const [s, setS] = useState<ServerStatus["ffmpeg"] | null>(null)
 
   useEffect(() => {
-    let stop = false, t: ReturnType<typeof setTimeout>
-    const poll = async () => {
-      try {
-        const d: Status = await fetch("/api/status").then((r) => r.json())
+    let stop = false, tries = 0, t: ReturnType<typeof setTimeout>
+    isHosted().then((h) => {
+      if (stop) return
+      if (h) { setHosted(true); return }
+      const poll = async () => {
+        const d = await fetchStatus()
         if (stop) return
-        setS(d.ffmpeg)
-        if (d.ffmpeg.state === "ok") return
-      } catch { /* servidor reiniciando */ }
-      t = setTimeout(poll, 1500)
-    }
-    poll()
+        if (d) { setS(d.ffmpeg); if (d.ffmpeg.state === "ok") return }
+        else if (tries++ > 20) return // servidor antigo sem /api/status: não fica perguntando pra sempre
+        t = setTimeout(poll, 1500)
+      }
+      poll()
+    })
     return () => { stop = true; clearTimeout(t) }
   }, [])
+
+  if (hosted) {
+    return (
+      <div className="mb-3 flex animate-in flex-col gap-3 rounded-2xl border border-white/9 bg-black/30 px-4 py-3 text-[13px] fade-in slide-in-from-top-2 sm:flex-row sm:items-center">
+        <Monitor className="hidden size-5 flex-none sm:block" />
+        <div className="min-w-0 flex-1">
+          <b className="font-semibold">Esta é a versão online do ytbaixar</b>
+          <span className="block text-xs text-muted-foreground">
+            Os downloads rodam no seu PC (yt-dlp + ffmpeg). Instale o app grátis pra Windows e baixe direto dele.
+          </span>
+        </div>
+        <a href={RELEASE_URL} target="_blank" rel="noopener"
+          className="inline-flex flex-none items-center justify-center gap-2 rounded-xl bg-yt px-4 py-2 font-semibold text-white transition hover:-translate-y-0.5 active:scale-95">
+          <Download className="size-4" /> Baixar o app
+        </a>
+      </div>
+    )
+  }
 
   if (!s || s.state === "ok" || s.state === "checando") return null
   const err = s.state === "erro"

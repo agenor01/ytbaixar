@@ -1,4 +1,4 @@
-import type { Job, VideoInfo } from "./types"
+import type { FeedKind, Job, Source, VideoInfo } from "./types"
 
 export const thumbUrl = (u?: string | null) => (u ? "/api/thumb?u=" + encodeURIComponent(u) : "")
 
@@ -53,17 +53,29 @@ export function splitTitle(t: string): [string, string] {
   return [t, ""]
 }
 
-export function isYtLink(s: string) {
+export function isSupportedLink(s: string) {
   try {
     const u = new URL(String(s).trim())
-    return /(^|\.)youtube(-nocookie)?\.com$|^youtu\.be$/.test(u.hostname)
+    return /(^|\.)youtube(-nocookie)?\.com$|^youtu\.be$|(^|\.)tiktok\.com$/.test(u.hostname)
   } catch { return false }
 }
 
-// Progresso geral: mp4 = vídeo (0–50%) + áudio (50–100%); só áudio = 0–100%
+// O que muda de uma fonte pra outra: nome, cor, texto do link e como chamar quem postou
+export const SOURCES: Record<Source, {
+  label: string; color: string; chip: string; feed: FeedKind; open: string; person: string; glow: string
+}> = {
+  youtube: { label: "YouTube", color: "#ff4545", chip: "bg-yt", feed: "yt", open: "Abrir no YouTube", person: "Canal", glow: "255,69,69" },
+  music: { label: "YouTube Music", color: "#f05ad2", chip: "bg-ytm", feed: "music", open: "Abrir no YouTube Music", person: "Artista", glow: "240,90,210" },
+  tiktok: { label: "TikTok", color: "#fe2c55", chip: "bg-tt", feed: "tt", open: "Abrir no TikTok", person: "Criador", glow: "254,44,85" },
+}
+
+// TikTok entrega vídeo e áudio num arquivo só; no YouTube vêm separados e são juntados no fim
+export const singleStream = (job: Pick<Job, "audio" | "info">) => job.audio || job.info.source === "tiktok"
+
+// Progresso geral: mp4 do YouTube = vídeo (0–50%) + áudio (50–100%); arquivo único = 0–100%
 export function overall(job: Job) {
   if (job.status === "pronto") return 100
-  if (job.audio) return job.percent
+  if (singleStream(job)) return job.percent
   const part = Math.max(1, Math.min(2, job.part || 1))
   return (part - 1) * 50 + job.percent / 2
 }

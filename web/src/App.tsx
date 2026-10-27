@@ -20,7 +20,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import {
   addFeed, cancelJob, fetchInfo, getState, onDone, saveSettings, startDownload, stepQuality, toggleFormat, useStore,
 } from "@/lib/store"
-import { isYtLink, thumbUrl } from "@/lib/format"
+import { isSupportedLink, thumbUrl } from "@/lib/format"
 import { ACTIVE } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -57,7 +57,7 @@ export default function App() {
     addFeed({ who: "ytbaixar", av: "sys", icon: "sparkle",
       text: "Cole um link (Ctrl+V), arraste da barra de endereço ou digite. Atalhos: / busca · D baixa · F troca formato · ↑↓ qualidade." })
     const q = new URLSearchParams(location.search)
-    const shared = [q.get("url"), q.get("text"), q.get("title")].map((v) => v?.match(/https?:\/\/\S+/)?.[0]).find((v) => v && isYtLink(v))
+    const shared = [q.get("url"), q.get("text"), q.get("title")].map((v) => v?.match(/https?:\/\/\S+/)?.[0]).find((v) => v && isSupportedLink(v))
     if (shared) fetchInfo(shared, { auto: true })
     else if (q.has("paste")) setTimeout(focusSearch, 300) // atalho "Colar link e baixar" do app instalado
     if (location.search) history.replaceState(null, "", location.pathname)
@@ -69,7 +69,7 @@ export default function App() {
       const el = e.target as HTMLElement
       if (el.closest("input, textarea, [role=dialog]")) return
       const t = e.clipboardData?.getData("text").trim() || ""
-      if (isYtLink(t)) { e.preventDefault(); fetchInfo(t, { auto: true }) }
+      if (isSupportedLink(t)) { e.preventDefault(); fetchInfo(t, { auto: true }) }
     }
     let depth = 0
     const enter = (e: DragEvent) => { e.preventDefault(); depth++; setDragging(true) }
@@ -79,7 +79,7 @@ export default function App() {
       e.preventDefault(); depth = 0; setDragging(false)
       const dt = e.dataTransfer
       const t = (dt?.getData("text/uri-list") || dt?.getData("text/plain") || "").split(/\r?\n/).find((l) => l && !l.startsWith("#"))
-      if (t) fetchInfo(t, { auto: true }); else toast.error("Solte um link do YouTube")
+      if (t) fetchInfo(t, { auto: true }); else toast.error("Solte um link do YouTube ou do TikTok")
     }
     const key = (e: KeyboardEvent) => {
       const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "") || document.querySelector("[role=dialog]")

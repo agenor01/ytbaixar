@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
 
 const ICONS = { alert: AlertCircle, check: Check, download: Download, music: Music2, sparkle: Sparkles, x: X }
 const AV: Record<FeedKind, string> = {
-  yt: "bg-yt text-white", music: "bg-ytm text-white", sys: "bg-[#4b4d57] text-white",
+  yt: "bg-yt text-white", music: "bg-ytm text-white", tt: "bg-tt text-white", sys: "bg-[#4b4d57] text-white",
   ok: "bg-[#2f9e5b] text-white", err: "bg-[#c94242] text-white", dl: "bg-tile-yellow text-ink",
 }
 

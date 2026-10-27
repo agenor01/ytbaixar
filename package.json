@@ -1,8 +1,8 @@
 {
   "name": "ytbaixar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Baixe vídeos do YouTube e do YouTube Music em MP4 — site local, PWA e app de PC.",
+  "description": "Baixe vídeos do YouTube, YouTube Music e TikTok em MP4 — site local, PWA e app de PC.",
   "scripts": {
     "postinstall": "pnpm --dir web install",
     "build": "pnpm --dir web build",

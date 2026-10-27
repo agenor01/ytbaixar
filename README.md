@@ -1,6 +1,6 @@
 # ytbaixar
 
-Baixe vídeos do **YouTube** e do **YouTube Music** em **MP4** (ou só o áudio em M4A), direto do seu PC.
+Baixe vídeos do **YouTube**, do **YouTube Music** e do **TikTok** em **MP4** (ou só o áudio em M4A), direto do seu PC.
 Roda localmente com [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) e tem três jeitos de usar:
 
 | Jeito | Como abrir |
@@ -90,7 +90,7 @@ Pelo celular o site funciona normal, mas não vira PWA instalável (o navegador 
 
 ## Problemas
 
-- **Parou de baixar**: quase sempre o YouTube mudou algo. Atualize o yt-dlp: `bin\yt-dlp.exe -U`
+- **Parou de baixar**: quase sempre o YouTube ou o TikTok mudou algo. Atualize o yt-dlp: `bin\yt-dlp.exe -U`
 - **Vídeo em 4K não abre**: acima de 1080p o YouTube costuma oferecer só VP9/AV1; o MP4 sai certo, mas players antigos podem não tocar.
 
 Use só para conteúdo que você tem direito de baixar.

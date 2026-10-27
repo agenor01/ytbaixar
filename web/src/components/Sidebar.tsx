@@ -1,4 +1,4 @@
-import { Headphones, Music2, Play, Plus, SlidersHorizontal } from "lucide-react"
+import { Clapperboard, Headphones, Music2, Play, Plus, SlidersHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { fetchInfo, setFilter, setTab, useStore } from "@/lib/store"
 import { thumbUrl } from "@/lib/format"
@@ -19,6 +19,7 @@ export function Sidebar({ onNewLink, onSettings, onRename, onNavigate }: Props) 
   const sources = [
     { k: "youtube" as const, label: "YouTube", Icon: Play, cls: "bg-yt text-white", n: h.filter((x) => x.source === "youtube" && !x.audio).length },
     { k: "music" as const, label: "YouTube Music", Icon: Music2, cls: "bg-ytm text-white", n: h.filter((x) => x.source === "music" && !x.audio).length },
+    { k: "tiktok" as const, label: "TikTok", Icon: Clapperboard, cls: "bg-tt text-white", n: h.filter((x) => x.source === "tiktok" && !x.audio).length },
     { k: "audio" as const, label: "Só áudio", Icon: Headphones, cls: "bg-tile-green text-ink", n: h.filter((x) => x.audio).length },
   ]
   const go = (fn: () => void) => () => { fn(); onNavigate?.() }

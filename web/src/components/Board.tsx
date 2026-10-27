@@ -5,7 +5,7 @@ import { MagicCard } from "@/components/ui/magic-card"
 import { NumberTicker } from "@/components/ui/number-ticker"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cancelJob, copy, fetchInfo, focusJob, lastDownloadText, redo, setFilter, setTab, useStore } from "@/lib/store"
-import { ago, fmtBytes, overall, thumbUrl } from "@/lib/format"
+import { SOURCES, ago, fmtBytes, overall, thumbUrl } from "@/lib/format"
 import { useTick } from "@/lib/hooks"
 import { ACTIVE, FINISHED, type Tab } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -72,7 +72,7 @@ export function Board() {
         </div>
         <div className="flex gap-1">
           <Button size="icon-sm" variant="ghost" title="Abrir aqui" onClick={() => fetchInfo(x.url)}><RefreshCw /></Button>
-          <Button size="icon-sm" variant="ghost" title="Abrir no YouTube" onClick={() => window.open(x.url, "_blank", "noopener")}><ExternalLink /></Button>
+          <Button size="icon-sm" variant="ghost" title={SOURCES[x.source]?.open || "Abrir no site"} onClick={() => window.open(x.url, "_blank", "noopener")}><ExternalLink /></Button>
         </div>
       </li>
     )) : (

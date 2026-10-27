@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { ShineBorder } from "@/components/ui/shine-border"
 import { fetchInfo, useStore } from "@/lib/store"
-import { isYtLink } from "@/lib/format"
+import { isSupportedLink } from "@/lib/format"
 
 export const SearchBar = forwardRef<HTMLInputElement>(function SearchBar(_, ref) {
   const { loading, info } = useStore()
@@ -37,9 +37,9 @@ export const SearchBar = forwardRef<HTMLInputElement>(function SearchBar(_, ref)
         onChange={(e) => setValue(e.target.value)}
         onPaste={(e) => {
           const t = e.clipboardData.getData("text").trim()
-          if (isYtLink(t)) { e.preventDefault(); go(t, true) }
+          if (isSupportedLink(t)) { e.preventDefault(); go(t, true) }
         }}
-        placeholder="Cole um link do YouTube ou YouTube Music…"
+        placeholder="Cole um link do YouTube, YouTube Music ou TikTok…"
         spellCheck={false}
         enterKeyHint="search"
         inputMode="url"

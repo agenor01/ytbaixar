@@ -1,4 +1,4 @@
-export type Source = "youtube" | "music"
+export type Source = "youtube" | "music" | "tiktok"
 
 export interface VideoInfo {
   id: string
@@ -14,6 +14,7 @@ export interface VideoInfo {
   likes: number | null
   uploaded: string | null
   album: string | null
+  vertical?: boolean // vídeo em pé (TikTok, Shorts)
   heights: number[]
   sizes: Record<string, number | null>
 }
@@ -64,7 +65,7 @@ export interface Settings {
   confetti: boolean
 }
 
-export type FeedKind = "yt" | "music" | "sys" | "ok" | "err" | "dl"
+export type FeedKind = "yt" | "music" | "tt" | "sys" | "ok" | "err" | "dl"
 
 export interface FeedItem {
   id: number
@@ -80,7 +81,7 @@ export interface FeedItem {
 }
 
 export type Tab = "fila" | "feitos" | "hist"
-export type Filter = "youtube" | "music" | "audio" | null
+export type Filter = Source | "audio" | null
 
 export const ACTIVE: JobStatus[] = ["iniciando", "baixando", "convertendo"]
 export const FINISHED: JobStatus[] = ["pronto", "erro", "cancelado"]

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import {
-  Calendar, Check, ChevronLeft, ChevronRight, Clock, Copy, Download, Eye, Film, Headphones, Heart, Link2, Music2, Play, User, X,
+  Calendar, Check, ChevronLeft, ChevronRight, Clapperboard, Clock, Copy, Download, Eye, Film, Headphones, Heart, Link2, Music2, Play, User, X,
 } from "lucide-react"
 import { BorderBeam } from "@/components/ui/border-beam"
 import { NumberTicker } from "@/components/ui/number-ticker"
@@ -8,7 +8,7 @@ import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cancelJob, copy, setAudio, setQuality, stepQuality, toggleFormat, useStore } from "@/lib/store"
-import { fmtBytes, fmtDate, fmtDur, fmtNum, overall, qualityList, qualityTag, sizeFor, yearsAgo } from "@/lib/format"
+import { SOURCES, fmtBytes, fmtDate, fmtDur, fmtNum, overall, qualityList, qualityTag, singleStream, sizeFor, yearsAgo } from "@/lib/format"
 import { tilt } from "@/lib/hooks"
 import { ACTIVE } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -50,28 +50,33 @@ function ProgressTile() {
   const active = !!job && ACTIVE.includes(job.status)
   const pct = job ? overall(job) : 0
   const isAudio = job ? job.audio : audio
-  const indet = job && (job.status === "iniciando" || (job.status === "convertendo" && job.percent >= 100 && (job.audio || job.part >= 2)))
+  // Arquivo único (só áudio, ou TikTok que já vem com som) não tem a etapa "parte 2: áudio"
+  const single = job ? singleStream(job) : audio || info?.source === "tiktok"
+  const indet = job && (job.status === "iniciando" || (job.status === "convertendo" && job.percent >= 100 && (single || job.part >= 2)))
+  const site = SOURCES[job?.info.source || info?.source || "youtube"].label
 
   const [note, sub] = !job
     ? [info ? "Pronto pra baixar" : "Nenhum download ainda", info ? `${audio ? "M4A" : "MP4"} · ≈ ${fmtBytes(sizeFor(info, quality, audio))}` : "escolha qualidade e formato"]
     : ({
-        iniciando: ["Preparando…", "falando com o YouTube"],
+        iniciando: ["Preparando…", "falando com o " + site],
         baixando: [
-          (job.audio ? "Baixando áudio" : job.part >= 2 ? "Parte 2 de 2 · áudio" : "Parte 1 de 2 · vídeo") + (job.size ? ` de ${job.size}` : ""),
+          (job.audio ? "Baixando áudio" : single ? "Baixando vídeo" : job.part >= 2 ? "Parte 2 de 2 · áudio" : "Parte 1 de 2 · vídeo") + (job.size ? ` de ${job.size}` : ""),
           [job.speed, job.eta && "faltam " + job.eta].filter(Boolean).join(" · ") || "…",
         ],
-        convertendo: ["Finalizando…", job.audio ? "convertendo pra M4A" : "juntando vídeo e áudio"],
+        convertendo: ["Finalizando…", job.audio ? "convertendo pra M4A" : single ? "preparando o MP4" : "juntando vídeo e áudio"],
         pronto: ["Concluído!", `${job.name || ""} · ${fmtBytes(job.bytes)}`],
         erro: ["Deu erro", job.error || ""],
         cancelado: ["Cancelado", "o download foi interrompido"],
       } as const)[job.status]
 
   const videoDone = !!job && (job.part >= 2 || pct >= 50)
-  const markers = [
-    !isAudio && { left: 0, Icon: Film, done: videoDone, now: !job || !videoDone },
-    { left: isAudio ? 0 : 50, Icon: Music2, done: pct >= 100, now: !!job && (isAudio || videoDone) && pct < 100 },
-    { left: 100, Icon: Check, done: job?.status === "pronto", now: false },
-  ].filter(Boolean) as { left: number; Icon: typeof Film; done: boolean; now: boolean }[]
+  const markers = (single
+    ? [{ left: 0, Icon: isAudio ? Music2 : Film, done: pct >= 100, now: pct < 100 }]
+    : [
+        { left: 0, Icon: Film, done: videoDone, now: !job || !videoDone },
+        { left: 50, Icon: Music2, done: pct >= 100, now: !!job && videoDone && pct < 100 },
+      ]
+  ).concat({ left: 100, Icon: Check, done: job?.status === "pronto", now: false })
 
   return (
     <Tile label="Progresso" className="col-span-full bg-tile-yellow md:col-span-4"
@@ -197,7 +202,7 @@ function DetailsTile() {
     { Icon: Eye, tip: info?.views != null ? `${fmtNum(info.views)} visualizações` : null },
     { Icon: Heart, tip: info?.likes != null ? `${fmtNum(info.likes)} curtidas` : null },
     { Icon: Calendar, tip: d ? d.toLocaleDateString("pt-BR", { day: "numeric", month: "long", year: "numeric" }) : null },
-    { Icon: info?.source === "music" ? Music2 : Play, tip: info ? (info.source === "music" ? "Veio do YouTube Music" : "Veio do YouTube") : null },
+    { Icon: info?.source === "music" ? Music2 : info?.source === "tiktok" ? Clapperboard : Play, tip: info ? "Veio do " + SOURCES[info.source].label : null },
     { Icon: User, tip: info?.artist || null, run: () => info?.channelUrl && window.open(info.channelUrl, "_blank", "noopener") },
     { Icon: Link2, tip: info ? "Copiar link do vídeo" : null, run: () => info && copy(info.webpage, "Link copiado") },
   ]

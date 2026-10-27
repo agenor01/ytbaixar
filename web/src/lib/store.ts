@@ -2,7 +2,7 @@
 import { useSyncExternalStore } from "react"
 import { toast } from "sonner"
 import { RELEASE_URL, isHosted } from "./backend"
-import { ago, fmtDur, isYtLink, overall, qualityList, thumbUrl } from "./format"
+import { SOURCES, ago, fmtDur, isSupportedLink, overall, qualityList, singleStream, thumbUrl } from "./format"
 import { ACTIVE, FINISHED, type FeedItem, type Filter, type HistoryItem, type Job, type Settings, type Tab, type VideoInfo } from "./types"
 
 export interface State {
@@ -93,7 +93,7 @@ let ticket = 0
 export async function fetchInfo(url: string, opts: { auto?: boolean } = {}) {
   url = String(url || "").trim()
   if (!url) return
-  if (!isYtLink(url)) { toast.error("Isso não parece um link do YouTube"); return }
+  if (!isSupportedLink(url)) { toast.error("Isso não parece um link do YouTube ou do TikTok"); return }
   if (await isHosted()) { needsApp(); return }
   const my = ++ticket
   set({ loading: true })
@@ -107,9 +107,9 @@ export async function fetchInfo(url: string, opts: { auto?: boolean } = {}) {
       quality = h ? String(h) : "best"
     }
     set({ info, quality, audio: info.source === "music" && s.musicAudio, focus: latestJobFor(info.id)?.id || null, loading: false })
-    const music = info.source === "music"
+    const src = SOURCES[info.source] || SOURCES.youtube
     addFeed({
-      who: music ? "YouTube Music" : "YouTube", av: music ? "music" : "yt", img: thumbUrl(info.thumbnail), group: info.id,
+      who: src.label, av: src.feed, img: thumbUrl(info.thumbnail), group: info.id,
       text: `Encontrei "${info.title}"${info.artist ? " de " + info.artist : ""} · ${fmtDur(info.duration)}`,
     })
     if (opts.auto && s.auto) startDownload()
@@ -172,7 +172,7 @@ function follow(job: Job) {
     if (job.status === "cancelado") { es.close(); return }
     const wasPart = job.part
     Object.assign(job, { status: d.status, percent: d.percent, speed: d.speed, eta: d.eta, size: d.size, part: d.part || job.part, name: d.name, error: d.error })
-    if (!job.audio && d.part === 2 && wasPart === 1) {
+    if (!singleStream(job) && d.part === 2 && wasPart === 1) {
       addFeed({ who: "ytbaixar", av: "sys", icon: "music", group: job.info.id, text: "Vídeo baixado, agora o áudio…" })
     }
     if (FINISHED.includes(d.status)) es.close()

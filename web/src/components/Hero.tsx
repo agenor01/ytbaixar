@@ -4,31 +4,36 @@ import { Button } from "@/components/ui/button"
 import { BlurFade } from "@/components/ui/blur-fade"
 import { ShimmerButton } from "@/components/ui/shimmer-button"
 import { copy, startDownload, useStore } from "@/lib/store"
-import { splitTitle, thumbUrl } from "@/lib/format"
+import { SOURCES, splitTitle, thumbUrl } from "@/lib/format"
 import { tilt } from "@/lib/hooks"
 import { cn } from "@/lib/utils"
 
 export function DownloadButton({ className }: { className?: string }) {
   const { info, audio } = useStore()
-  const music = info?.source === "music"
+  const src = SOURCES[info?.source || "youtube"]
+  // A sombra colorida fica num contêiner: "style" no ShimmerButton apagaria as variáveis de cor dele
   return (
-    <ShimmerButton
-      onClick={startDownload}
-      disabled={!info}
-      borderRadius="16px"
-      background={music ? "#f05ad2" : "#ff4545"}
-      className={cn("gap-2.5 px-5 py-3.5 text-[15px] font-bold shadow-[0_10px_30px_rgba(255,69,69,.35)] transition hover:-translate-y-0.5 active:scale-95 disabled:pointer-events-none disabled:opacity-35 disabled:shadow-none",
-        music && "shadow-[0_10px_30px_rgba(240,90,210,.35)]", className)}
-    >
-      {audio ? <Headphones className="size-4" /> : <Download className="size-4" />}
-      {audio ? "Baixar áudio" : "Baixar MP4"}
-    </ShimmerButton>
+    <div className={cn("rounded-2xl transition hover:-translate-y-0.5", className)}
+      style={{ boxShadow: info ? `0 10px 30px rgba(${src.glow},.35)` : "none" }}>
+      <ShimmerButton
+        onClick={startDownload}
+        disabled={!info}
+        borderRadius="16px"
+        background={src.color}
+        className="w-full gap-2.5 px-5 py-3.5 text-[15px] font-bold transition active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+      >
+        {audio ? <Headphones className="size-4" /> : <Download className="size-4" />}
+        {audio ? "Baixar áudio" : "Baixar MP4"}
+      </ShimmerButton>
+    </div>
   )
 }
 
 export function Hero() {
   const { info, loading } = useStore()
-  const music = info?.source === "music"
+  const src = info ? SOURCES[info.source] : null
+  // Capa no formato do vídeo: quadrada (música), em pé (TikTok/Shorts) ou deitada
+  const shape = info?.source === "music" ? "square" : info?.vertical ? "tall" : "wide"
   const [a, b] = info ? splitTitle(info.title) : ["Cole um link", "pra começar"]
 
   return (
@@ -38,7 +43,9 @@ export function Hero() {
           {...tilt}
           className={cn(
             "relative overflow-hidden rounded-xl bg-linear-135 from-[#2a2c33] to-[#1a1b20] shadow-[0_18px_40px_rgba(0,0,0,.45)] transition-[width,transform] duration-500",
-            music ? "aspect-square w-40 md:w-37" : "aspect-video w-[min(360px,82vw)] md:w-52",
+            shape === "square" && "aspect-square w-40 md:w-37",
+            shape === "tall" && "aspect-[9/16] w-36 md:w-28",
+            shape === "wide" && "aspect-video w-[min(360px,82vw)] md:w-52",
           )}
         >
           {info?.thumbnail ? (
@@ -55,24 +62,20 @@ export function Hero() {
           <Button size="icon" variant="secondary" className="rounded-full" title="Adicionar à fila (D)" onClick={startDownload}><Plus /></Button>
           <Button size="icon" variant="secondary" className="rounded-full" title="Copiar link"
             onClick={() => (info ? copy(info.webpage, "Link copiado") : toast.error("Nada pra copiar ainda"))}><Share /></Button>
-          {info && (
-            <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-bold text-white", music ? "bg-ytm" : "bg-yt")}>
-              {music ? "YouTube Music" : "YouTube"}
-            </span>
+          {src && (
+            <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-bold text-white", src.chip)}>{src.label}</span>
           )}
         </div>
         <h1 title={info?.title} className={cn("line-clamp-3 text-2xl leading-tight tracking-tight md:text-[30px]", loading && "shimmer-bg rounded-lg text-transparent")}>
           <b className="font-bold">{a}</b>{b && <> <em className="font-light">{b}</em></>}
         </h1>
         <p className="mt-2 text-[13px] text-muted-foreground">
-          {info
-            ? [info.artist && (music ? "Artista " : "Canal ") + info.artist, info.album && "Álbum " + info.album].filter(Boolean).join(" · ")
-            : "Arraste, cole ou digite um endereço do YouTube"}
+          {info && src
+            ? [info.artist && `${src.person} ${info.artist}`, info.album && "Álbum " + info.album].filter(Boolean).join(" · ")
+            : "Arraste, cole ou digite um link do YouTube ou do TikTok"}
         </p>
-        {info && (
-          <a href={info.webpage} target="_blank" rel="noopener" className="text-[13px] underline underline-offset-3">
-            {music ? "Abrir no YouTube Music" : "Abrir no YouTube"}
-          </a>
+        {info && src && (
+          <a href={info.webpage} target="_blank" rel="noopener" className="text-[13px] underline underline-offset-3">{src.open}</a>
         )}
       </BlurFade>
 

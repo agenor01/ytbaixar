@@ -1,7 +1,7 @@
 {
   "name": "ytbaixar",
   "short_name": "ytbaixar",
-  "description": "Baixe vídeos do YouTube e do YouTube Music em MP4.",
+  "description": "Baixe vídeos do YouTube, YouTube Music e TikTok em MP4.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

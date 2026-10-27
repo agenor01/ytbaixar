@@ -35,9 +35,10 @@ const FFMPEG_URLS = [
 
 const ALLOWED_HOSTS = new Set([
   'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'www.youtube-nocookie.com',
+  'tiktok.com', 'www.tiktok.com', 'm.tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com',
 ]);
 // Capas passam pelo servidor pra página conseguir ler as cores (canvas sem CORS)
-const THUMB_HOSTS = /^(i\d*\.ytimg\.com|lh\d\.googleusercontent\.com|yt\d\.ggpht\.com)$/;
+const THUMB_HOSTS = /^(i\d*\.ytimg\.com|lh\d\.googleusercontent\.com|yt\d\.ggpht\.com|[\w-]+\.tiktokcdn(-[a-z]+)?\.com)$/;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -138,7 +139,9 @@ function checkUrl(raw) {
 }
 
 function sourceOf(u) {
-  return u.hostname.toLowerCase() === 'music.youtube.com' ? 'music' : 'youtube';
+  const h = u.hostname.toLowerCase();
+  if (h.endsWith('tiktok.com')) return 'tiktok';
+  return h === 'music.youtube.com' ? 'music' : 'youtube';
 }
 
 function run(args, onLine, onSpawn) {
@@ -186,43 +189,60 @@ function readBody(req) {
   });
 }
 
-// Tamanho aproximado do MP4 final pra cada resolução (melhor vídeo naquela altura + melhor áudio m4a)
-function sizesByHeight(formats) {
+const hasVideo = f => f.vcodec && f.vcodec !== 'none' && f.height;
+const isH264 = f => /^(avc1|h264)/.test(f.vcodec || '');
+// "Resolução" = o lado menor, igual ao campo res do yt-dlp: 1080p deitado e 1080p em pé (TikTok) contam igual
+const resOf = f => Math.min(f.width || f.height, f.height);
+
+// Tamanho aproximado do MP4 final pra cada resolução (melhor vídeo naquela resolução + melhor áudio m4a)
+function sizesByRes(formats) {
   const size = f => f.filesize || f.filesize_approx || 0;
   const audio = formats.filter(f => f.vcodec === 'none' && f.acodec && f.acodec !== 'none');
   const bestAudio = audio.filter(f => f.ext === 'm4a').sort((a, b) => size(b) - size(a))[0] || audio[0];
   const audioSize = bestAudio ? size(bestAudio) : 0;
   const out = {};
   for (const f of formats) {
-    if (!f.height || !f.vcodec || f.vcodec === 'none' || !size(f)) continue;
-    const avc = /^avc1/.test(f.vcodec);
-    const cur = out[f.height];
+    if (!hasVideo(f) || !size(f)) continue;
+    const r = resOf(f), avc = isH264(f), cur = out[r];
     // Mesma preferência do download: H.264 primeiro
-    if (!cur || (avc && !cur.avc) || (avc === cur.avc && size(f) > cur.v)) out[f.height] = { v: size(f), avc };
+    const hasAudio = f.acodec && f.acodec !== 'none';
+    if (!cur || (avc && !cur.avc) || (avc === cur.avc && size(f) > cur.v)) out[r] = { v: size(f), avc, hasAudio };
   }
   const result = { audio: audioSize || null };
-  for (const h in out) result[h] = out[h].v + audioSize;
+  // No TikTok o vídeo já vem com o áudio junto: não soma de novo
+  for (const r in out) result[r] = out[r].v + (out[r].hasAudio ? 0 : audioSize);
   return result;
+}
+
+// TikTok: o título é a legenda inteira; tira as hashtags e o "..." do corte
+function tiktokTitle(info) {
+  const t = String(info.description || info.title || '').replace(/#[^\s#]+/g, '').replace(/\s*\.\.\.$/, '').replace(/\s+/g, ' ').trim();
+  return t || `Vídeo de @${info.uploader || 'tiktok'}`;
 }
 
 async function handleInfo(req, res) {
   const { url } = await readBody(req);
   const u = checkUrl(url);
-  if (!u) return json(res, 400, { error: 'Cole um link do YouTube ou do YouTube Music.' });
+  if (!u) return json(res, 400, { error: 'Cole um link do YouTube, YouTube Music ou TikTok.' });
   try {
     const out = await run(['-J', '--no-playlist', '--no-warnings', u.href]);
     const info = JSON.parse(out);
+    const source = sourceOf(u);
     const formats = info.formats || [];
-    const heights = [...new Set(formats
-      .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
-      .map(f => f.height))].sort((a, b) => b - a);
+    // TikTok: só oferece as resoluções em H.264 (o 720p costuma vir só em H.265, que muito player não abre)
+    const video = formats.filter(hasVideo);
+    const offered = source === 'tiktok' && video.some(isH264) ? video.filter(isH264) : video;
+    const heights = [...new Set(offered.map(resOf))].sort((a, b) => b - a);
     json(res, 200, {
       id: info.id,
       url: u.href,
       webpage: info.webpage_url || u.href,
-      source: sourceOf(u),
-      title: info.track || info.title,
-      artist: info.artist || info.uploader || info.channel || '',
+      source,
+      title: source === 'tiktok' ? tiktokTitle(info) : (source === 'music' && info.track) || info.title,
+      artist: source === 'tiktok'
+        ? '@' + (info.uploader || info.channel || '')
+        : info.artist || info.uploader || info.channel || '',
+      vertical: video.some(f => f.width && f.height > f.width),
       channelUrl: info.channel_url || info.uploader_url || '',
       thumbnail: info.thumbnail,
       duration: info.duration || 0,
@@ -231,20 +251,23 @@ async function handleInfo(req, res) {
       uploaded: info.upload_date || null,
       album: info.album || null,
       heights,
-      sizes: sizesByHeight(formats),
+      sizes: sizesByRes(formats),
     });
   } catch (e) {
     json(res, 500, { error: e.message });
   }
 }
 
-function formatArgs(quality) {
+function formatArgs(quality, source) {
   if (quality === 'audio') {
-    return ['-f', 'ba[ext=m4a]/ba', '-x', '--audio-format', 'm4a'];
+    // "/b": no TikTok não tem áudio separado bom, então extrai do vídeo
+    return ['-f', 'ba[ext=m4a]/ba/b', '-x', '--audio-format', 'm4a'];
   }
   const h = parseInt(quality, 10);
+  const res = h > 0 ? `res:${h}` : 'res';
   // Prefere H.264 + AAC (toca em qualquer lugar); cai pra VP9/AV1 só se for a única opção na resolução.
-  const sort = h > 0 ? `res:${h},vcodec:avc1,acodec:m4a` : 'res,vcodec:avc1,acodec:m4a';
+  // No TikTok o codec vem antes da resolução: melhor 540p que abre em tudo do que 720p em H.265.
+  const sort = source === 'tiktok' ? `vcodec:avc1,${res},acodec:m4a` : `${res},vcodec:avc1,acodec:m4a`;
   return ['-S', sort, '-f', 'bv*+ba/b', '--merge-output-format', 'mp4', '--remux-video', 'mp4'];
 }
 
@@ -290,7 +313,11 @@ async function handleStart(req, res) {
     'download:PROG|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s',
     '--print', 'after_move:FILE|%(filepath)s',
     '-o', path.join(dir, '%(title).150B.%(ext)s'),
-    ...formatArgs(quality),
+    // TikTok: o título é a legenda; tira hashtags e o "..." pra o nome do arquivo ficar limpo
+    ...(sourceOf(u) === 'tiktok'
+      ? ['--replace-in-metadata', 'title', '\\s*#\\S+', '', '--replace-in-metadata', 'title', '\\s*\\.{3}$', '']
+      : []),
+    ...formatArgs(quality, sourceOf(u)),
     u.href,
   ];
   // Vídeo e áudio vêm em downloads separados (part 1 e 2); quando um chega a 100% mostra "finalizando"

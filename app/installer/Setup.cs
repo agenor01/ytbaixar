@@ -121,7 +121,7 @@ static class Installer
 
         string exe = Path.Combine(dir, "ytbaixar.exe");
         string ico = Path.Combine(dir, "ytbaixar.ico");
-        const string desc = "Baixar vídeos do YouTube e YouTube Music";
+        const string desc = "Baixar vídeos do YouTube e do TikTok";
         if (o.StartMenu)
         {
             report(92, "Criando atalhos…");
@@ -380,7 +380,7 @@ class HeaderPanel : Panel
             g.DrawString("yt", title, Brushes.White, x, 30 * k);
             float w = g.MeasureString("yt", title, PointF.Empty, StringFormat.GenericTypographic).Width;
             g.DrawString("baixar", title, red, x + w + 2 * k, 30 * k);
-            g.DrawString("Baixe vídeos do YouTube e YouTube Music em MP4", sub, muted, x + 2 * k, 76 * k);
+            g.DrawString("Baixe vídeos do YouTube e do TikTok em MP4", sub, muted, x + 2 * k, 76 * k);
         }
 
         var strip = new Rectangle(0, r.Bottom - (int)(4 * k), r.Width, (int)(4 * k) + 1);
